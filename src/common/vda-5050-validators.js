@@ -688,9 +688,11 @@ const ref4 = function validate(data) {
         validate.errors = [{ keywordLocation: "#/properties/controlPoints/items/required", instanceLocation: "#/controlPoints/"+n+"/y" }]
         return false
       }
-      if (!("weight" in data.controlPoints[n] && hasOwn(data.controlPoints[n], "weight"))) {
-        validate.errors = [{ keywordLocation: "#/properties/controlPoints/items/required", instanceLocation: "#/controlPoints/"+n+"/weight" }]
-        return false
+      if ("weight" in data.controlPoints[n] && hasOwn(data.controlPoints[n], "weight")) {
+        if (!(typeof data.controlPoints[n].weight === "number")) {
+          validate.errors = [{ keywordLocation: "#/properties/controlPoints/items/properties/weight/type", instanceLocation: "#/controlPoints/"+n+"/weight" }]
+          return false
+        }
       }
       if (!(typeof data.controlPoints[n].x === "number")) {
         validate.errors = [{ keywordLocation: "#/properties/controlPoints/items/properties/x/type", instanceLocation: "#/controlPoints/"+n+"/x" }]
@@ -699,24 +701,6 @@ const ref4 = function validate(data) {
       if (!(typeof data.controlPoints[n].y === "number")) {
         validate.errors = [{ keywordLocation: "#/properties/controlPoints/items/properties/y/type", instanceLocation: "#/controlPoints/"+n+"/y" }]
         return false
-      }
-      if (!(typeof data.controlPoints[n].weight === "number")) {
-        validate.errors = [{ keywordLocation: "#/properties/controlPoints/items/properties/weight/type", instanceLocation: "#/controlPoints/"+n+"/weight" }]
-        return false
-      }
-      if ("orientation" in data.controlPoints[n] && hasOwn(data.controlPoints[n], "orientation")) {
-        if (!(typeof data.controlPoints[n].orientation === "number")) {
-          validate.errors = [{ keywordLocation: "#/properties/controlPoints/items/properties/orientation/type", instanceLocation: "#/controlPoints/"+n+"/orientation" }]
-          return false
-        }
-        if (!(-3.14159265359 <= data.controlPoints[n].orientation)) {
-          validate.errors = [{ keywordLocation: "#/properties/controlPoints/items/properties/orientation/minimum", instanceLocation: "#/controlPoints/"+n+"/orientation" }]
-          return false
-        }
-        if (!(3.14159265359 >= data.controlPoints[n].orientation)) {
-          validate.errors = [{ keywordLocation: "#/properties/controlPoints/items/properties/orientation/maximum", instanceLocation: "#/controlPoints/"+n+"/orientation" }]
-          return false
-        }
       }
     }
   }
@@ -1231,9 +1215,11 @@ const ref3 = function validate(data) {
         validate.errors = [{ keywordLocation: "#/properties/controlPoints/items/required", instanceLocation: "#/controlPoints/"+l+"/y" }]
         return false
       }
-      if (!("weight" in data.controlPoints[l] && hasOwn(data.controlPoints[l], "weight"))) {
-        validate.errors = [{ keywordLocation: "#/properties/controlPoints/items/required", instanceLocation: "#/controlPoints/"+l+"/weight" }]
-        return false
+      if ("weight" in data.controlPoints[l] && hasOwn(data.controlPoints[l], "weight")) {
+        if (!(typeof data.controlPoints[l].weight === "number")) {
+          validate.errors = [{ keywordLocation: "#/properties/controlPoints/items/properties/weight/type", instanceLocation: "#/controlPoints/"+l+"/weight" }]
+          return false
+        }
       }
       if (!(typeof data.controlPoints[l].x === "number")) {
         validate.errors = [{ keywordLocation: "#/properties/controlPoints/items/properties/x/type", instanceLocation: "#/controlPoints/"+l+"/x" }]
@@ -1242,24 +1228,6 @@ const ref3 = function validate(data) {
       if (!(typeof data.controlPoints[l].y === "number")) {
         validate.errors = [{ keywordLocation: "#/properties/controlPoints/items/properties/y/type", instanceLocation: "#/controlPoints/"+l+"/y" }]
         return false
-      }
-      if (!(typeof data.controlPoints[l].weight === "number")) {
-        validate.errors = [{ keywordLocation: "#/properties/controlPoints/items/properties/weight/type", instanceLocation: "#/controlPoints/"+l+"/weight" }]
-        return false
-      }
-      if ("orientation" in data.controlPoints[l] && hasOwn(data.controlPoints[l], "orientation")) {
-        if (!(typeof data.controlPoints[l].orientation === "number")) {
-          validate.errors = [{ keywordLocation: "#/properties/controlPoints/items/properties/orientation/type", instanceLocation: "#/controlPoints/"+l+"/orientation" }]
-          return false
-        }
-        if (!(-3.14159265359 <= data.controlPoints[l].orientation)) {
-          validate.errors = [{ keywordLocation: "#/properties/controlPoints/items/properties/orientation/minimum", instanceLocation: "#/controlPoints/"+l+"/orientation" }]
-          return false
-        }
-        if (!(3.14159265359 >= data.controlPoints[l].orientation)) {
-          validate.errors = [{ keywordLocation: "#/properties/controlPoints/items/properties/orientation/maximum", instanceLocation: "#/controlPoints/"+l+"/orientation" }]
-          return false
-        }
       }
     }
   }
