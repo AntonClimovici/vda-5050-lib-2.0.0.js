@@ -347,16 +347,10 @@ export interface Trajectory {
 
 export interface ControlPoint {
     /**
-     * Range: [-pi .. pi]. Orientation of the AGV on this position of the curve. The orientation
-     * is in world coordinates.
-     * When not defined the orientation of the AGV will be tangential to the curve.
-     */
-    orientation?: number;
-    /**
      * Range: (0 .. Infinity). The weight with which this control point pulls on the curve.
      * When not defined, the default will be 1.0.
      */
-    weight: number;
+    weight?: number;
     /**
      * X coordinate described in the world coordinate system.
      */
