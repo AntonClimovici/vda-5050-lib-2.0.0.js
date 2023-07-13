@@ -247,7 +247,7 @@ export interface Edge {
      * Distance of the path from startNode to endNode in meters. This value is used by
      * line-guided AGVs to decrease their speed before reaching a stop position.
      */
-    distance?: number;
+    length?: number;
     /**
      * Verbose description of the edge.
      */

@@ -960,9 +960,9 @@ const ref0 = function validate(data) {
           return false
         }
       }
-      if ("distance" in data.edges[l] && hasOwn(data.edges[l], "distance")) {
-        if (!(typeof data.edges[l].distance === "number")) {
-          validate.errors = [{ keywordLocation: "#/allOf/1/properties/edges/items/properties/distance/type", instanceLocation: "#/edges/"+l+"/distance" }]
+      if ("length" in data.edges[l] && hasOwn(data.edges[l], "length")) {
+        if (!(typeof data.edges[l].length === "number")) {
+          validate.errors = [{ keywordLocation: "#/allOf/1/properties/edges/items/properties/length/type", instanceLocation: "#/edges/"+l+"/length" }]
           return false
         }
       }
