@@ -278,18 +278,25 @@ export interface Edge {
      */
     minHeight?: number;
     /**
-     * Orientation of the AGV on the edge relative to the map coordinate origin (for holonomic
-     * vehicles with more than one driving direction).
-     * Example: orientation Pi/2 rad will lead to a rotation of 90 degrees.
+     * Orientation of the AGV on the edge. The value orientationType defines if it has to be 
+     * interpreted relative to the global project specific map coordinate system or tangential
+     * to the edge. In case of interpreted tangential to the edge 0.0 = forwards and
+     * PI = backwards.Example: orientation Pi/2 rad will lead to a rotation of 90 degrees.
      * If AGV starts in different orientation, rotate the vehicle on the edge to the desired
      * orientation if rotationAllowed is set to "true".
      * If rotationAllowed is "false", rotate before entering the edge.
      * If that is not possible, reject the order.
-     * If a trajectory with orientation is defined, follow the trajectories orientation. If a
-     * trajectory without orientation and the orientation field here is defined, apply the
-     * orientation to the tangent of the trajectory.
+     * If no trajectory is defined, apply the rotation to the direct path between the two connecting
+     * nodes of the edge.
+     * If a trajectory is defined for the edge, apply the orientation to the trajectory.
      */
     orientation?: number;
+    /**
+     * "GLOBAL"- relative to the global project specific map coordinate system;
+     * "TANGENTIAL"- tangential to the edge.
+     * If not defined, the default value is "TANGENTIAL".
+     */
+    orientationType?: OrientationType;
     /**
      * If true, the edge is part of the base plan. If false, the edge is part of the horizon
      * plan.
@@ -316,6 +323,16 @@ export interface Edge {
      * trajectory.
      */
     trajectory?: Trajectory;
+}
+
+/**
+ * Orientation type.
+ * GLOBAL: relative to the global project specific map coordinate system.
+ * TANGENTIAL: tangential to the edge.
+ */
+export enum OrientationType {
+    Global = "GLOBAL",
+    Tangential = "TANGENTIAL",
 }
 
 /**

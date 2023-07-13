@@ -942,6 +942,16 @@ const ref0 = function validate(data) {
           return false
         }
       }
+      if ("orientationType" in data.edges[l] && hasOwn(data.edges[l], "orientationType")) {
+        if (!(typeof data.edges[l].orientationType === "string")) {
+          validate.errors = [{ keywordLocation: "#/allOf/1/properties/edges/items/properties/orientationType/type", instanceLocation: "#/edges/"+l+"/orientationType" }]
+          return false
+        }
+        if (!(data.edges[l].orientationType === "GLOBAL" || data.edges[l].orientationType === "TANGENTIAL")) {
+          validate.errors = [{ keywordLocation: "#/allOf/1/properties/edges/items/properties/orientationType/enum", instanceLocation: "#/edges/"+l+"/orientationType" }]
+          return false
+        }
+      }
       if ("direction" in data.edges[l] && hasOwn(data.edges[l], "direction")) {
         if (!(typeof data.edges[l].direction === "string")) {
           validate.errors = [{ keywordLocation: "#/allOf/1/properties/edges/items/properties/direction/type", instanceLocation: "#/edges/"+l+"/direction" }]
