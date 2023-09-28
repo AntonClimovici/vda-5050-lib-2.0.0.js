@@ -1793,15 +1793,15 @@ class VirtualAgvAdapter {
         if (!node.nodePosition) {
             return errorRefs;
         }
-        const { allowedDeviationTheta, allowedDeviationXy, mapId, theta, x, y } = node.nodePosition;
+        const { allowedDeviationTheta, allowedDeviationXY, mapId, theta, x, y } = node.nodePosition;
         const { mapId: agvMapId, theta: agvTheta, x: agvX, y: agvY } = this._vehicleState.position;
         if (mapId !== agvMapId) {
             errorRefs.push({ referenceKey: "nodeId", referenceValue: node.nodeId });
             errorRefs.push({ referenceKey: "nodePosition.mapId", referenceValue: agvMapId });
         }
-        const allowedXy = allowedDeviationXy || this.options.agvNormalDeviationXyTolerance;
+        const allowedXy = allowedDeviationXY || this.options.agvNormalDeviationXyTolerance;
         if ((agvX - x) ** 2 + (agvY - y) ** 2 &gt; allowedXy ** 2) {
-            errorRefs.push({ referenceKey: "nodePosition.allowedDeviationXy", referenceValue: allowedXy.toString() });
+            errorRefs.push({ referenceKey: "nodePosition.allowedDeviationXY", referenceValue: allowedXy.toString() });
         }
         <span class="missing-if-branch" title="else path not taken" >E</span>if (theta === undefined) {
             return errorRefs;
