@@ -1,0 +1,1177 @@
+"use strict";
+/*! Copyright (c) 2021 Siemens AG. Licensed under the MIT License. */
+Object.defineProperty(exports, "__esModule", { value: true });
+const tap = require("tap");
+const __1 = require("../..");
+const test_context_1 = require("../test-context");
+const test_objects_1 = require("../test-objects");
+function createHeaderlessOrder(nodeActions = [[createPickDropNoopAction("pick")], [createPickDropNoopAction("drop")]]) {
+    return {
+        orderId: (0, __1.createUuid)(),
+        orderUpdateId: 0,
+        nodes: [
+            {
+                nodeId: "productionunit_1",
+                sequenceId: 0,
+                released: true,
+                nodePosition: { x: 0, y: 0, mapId: "local" },
+                actions: nodeActions[0],
+            },
+            {
+                nodeId: "productionunit_2",
+                sequenceId: 2,
+                released: true,
+                nodePosition: { x: 100, y: 0, mapId: "local" },
+                actions: nodeActions[1],
+            },
+        ],
+        edges: [
+            {
+                edgeId: "productionunit_1_2",
+                sequenceId: 1,
+                startNodeId: "productionunit_1",
+                endNodeId: "productionunit_2",
+                released: true,
+                actions: [],
+            },
+        ],
+    };
+}
+function createPickDropNoopAction(actionType, blockingType = __1.BlockingType.Hard) {
+    return {
+        actionId: (0, __1.createUuid)(),
+        actionType,
+        blockingType,
+        actionParameters: [{ key: "stationType", value: "floor" }, { key: "loadType", value: "EPAL" }],
+    };
+}
+async function testOrderError(test, testName, errorType, mc, agvId, order, withStateChange, timeoutAfter, ...expectedErrorRefs) {
+    await test.test(testName, ts => new Promise(async (resolve) => {
+        if (timeoutAfter !== undefined) {
+            setTimeout(() => {
+                ts.pass("test timed out as expected after " + timeoutAfter + "ms");
+                resolve();
+            }, timeoutAfter);
+        }
+        let currentState;
+        if (withStateChange) {
+            currentState = withStateChange.ac.currentState;
+            const newState = JSON.parse(JSON.stringify(currentState));
+            const keys = withStateChange.keyChain.split(".");
+            let keyValue = newState;
+            for (const key of keys.slice(0, keys.length - 1)) {
+                keyValue = keyValue[key];
+            }
+            keyValue[keys[keys.length - 1]] = withStateChange.newValue;
+            withStateChange.ac.updatePartialState(newState, false);
+        }
+        let errorInvocations = 0;
+        const headeredOrder = await mc.assignOrder(agvId, order, {
+            onOrderProcessed: (withError, byCancelation, active, context) => {
+                errorInvocations++;
+                ts.equal(errorInvocations, 1);
+                ts.equal(byCancelation, false);
+                ts.equal(active, false);
+                ts.not(withError, undefined);
+                ts.equal(withError.errorLevel, __1.ErrorLevel.Warning);
+                ts.equal(withError.errorType, errorType);
+                ts.ok(withError.errorReferences.some(r => r.referenceKey === "orderId" && r.referenceValue === order.orderId));
+                ts.ok(withError.errorReferences.some(r => r.referenceKey === "orderUpdateId"));
+                ts.ok(!withError.errorReferences.some(r => r.referenceKey === "topic") ||
+                    withError.errorReferences.some(r => r.referenceKey === "topic" && r.referenceValue === __1.Topic.Order));
+                ts.ok(!withError.errorReferences.some(r => r.referenceKey === "headerId") ||
+                    withError.errorReferences.some(r => r.referenceKey === "headerId" &&
+                        r.referenceValue === headeredOrder.headerId.toString()));
+                ts.ok(expectedErrorRefs.every(er => withError.errorReferences.some(r => r.referenceKey === er.referenceKey && r.referenceValue === er.referenceValue)));
+                ts.strictSame(context.agvId, agvId);
+                ts.equal(context.order, order);
+                if (withStateChange) {
+                    withStateChange.ac.updatePartialState(currentState);
+                }
+                resolve();
+            },
+        });
+    }));
+}
+async function testOrder(test, testName, mc, agvId, order, expectedChanges, failAfter) {
+    await test.test(testName, ts => new Promise(async (resolve) => {
+        if (failAfter !== undefined) {
+            setTimeout(() => {
+                ts.pass("test timed out as expected after " + failAfter + "ms");
+                resolve();
+            }, failAfter);
+        }
+        let processedInvocations = 0;
+        let nodeTraversedIndex = -1;
+        let edgeTraversedIndex = -1;
+        let edgeTraversingCount = 0;
+        let triggeredOnEdgeTraversing = false;
+        let triggeredOnActionInitializing = false;
+        const headeredOrder = await mc.assignOrder(agvId, order, {
+            onOrderProcessed: (withError, byCancelation, active, context) => {
+                var _a;
+                if (failAfter !== undefined) {
+                    ts.fail("onOrderProcessed should not be called due to failAfter timeout");
+                    resolve();
+                    return;
+                }
+                if (expectedChanges.discardedByMc) {
+                    ts.fail("onOrderProcessed should not be called as order should be discarded by mc");
+                    resolve();
+                    return;
+                }
+                ts.equal(expectedChanges.completes, !active);
+                ts.equal(byCancelation, !!expectedChanges.canceled);
+                if (!expectedChanges.completes && expectedChanges.canceled) {
+                    return;
+                }
+                processedInvocations++;
+                ts.equal(processedInvocations, 1);
+                ts.strictSame(context.agvId, agvId);
+                ts.equal(context.order, order);
+                if (((_a = expectedChanges.errorRefs) === null || _a === void 0 ? void 0 : _a.length) > 0) {
+                    ts.not(withError, undefined);
+                    ts.ok(expectedChanges.errorRefs.every(er => withError.errorReferences.some(r => r.referenceKey === er.referenceKey && r.referenceValue === er.referenceValue)));
+                }
+                else {
+                    ts.equal(withError, undefined);
+                }
+                resolve();
+            },
+            onNodeTraversed: (node, nextEdge, nextNode, context) => {
+                if (failAfter !== undefined) {
+                    ts.fail("onNodeTraversed should not be called because of failAfter timeout");
+                    resolve();
+                    return;
+                }
+                nodeTraversedIndex++;
+                if (!expectedChanges.isStitching) {
+                    ts.equal(edgeTraversingCount, 0);
+                    ts.equal(nodeTraversedIndex, edgeTraversedIndex + 1);
+                    ts.equal(node, context.order.nodes[nodeTraversedIndex]);
+                    ts.equal(nextEdge, context.order.edges[nodeTraversedIndex]);
+                    ts.equal(nextNode, context.order.nodes[nodeTraversedIndex + 1]);
+                }
+                ts.strictSame(context.agvId, agvId);
+                ts.equal(context.order, order);
+                ts.strictSame(context.order, order);
+                if (node.nodePosition) {
+                    ts.equal(context.state.agvPosition.positionInitialized, true);
+                    ts.equal(context.state.agvPosition.mapId, node.nodePosition.mapId);
+                    ts.equal(context.state.agvPosition.x, node.nodePosition.x);
+                    ts.equal(context.state.agvPosition.y, node.nodePosition.y);
+                    if (node.nodePosition.theta !== undefined) {
+                        ts.equal(context.state.agvPosition.theta, node.nodePosition.theta);
+                    }
+                }
+                if (!expectedChanges.completes && !(nextEdge === null || nextEdge === void 0 ? void 0 : nextEdge.released)) {
+                    ts.pass("last released node traversed - order has more unreleased nodes");
+                    resolve();
+                }
+            },
+            onEdgeTraversed: (edge, startNode, endNode, context) => {
+                if (failAfter !== undefined) {
+                    ts.fail("onEdgeTraversed should not be called because of failAfter timeout");
+                    resolve();
+                    return;
+                }
+                edgeTraversingCount = 0;
+                edgeTraversedIndex++;
+                if (!expectedChanges.isStitching) {
+                    ts.equal(nodeTraversedIndex, edgeTraversedIndex);
+                    ts.equal(edge, context.order.edges[edgeTraversedIndex]);
+                    ts.equal(startNode, context.order.nodes[edgeTraversedIndex]);
+                    ts.equal(endNode, context.order.nodes[edgeTraversedIndex + 1]);
+                }
+                ts.strictSame(context.agvId, agvId);
+                ts.equal(context.order, order);
+                ts.strictSame(context.order, order);
+            },
+            onEdgeTraversing: (edge, startNode, endNode, stateChanges, invocationCount, context) => {
+                if (failAfter !== undefined) {
+                    ts.fail("onEdgeTraversing should not be called because of failAfter timeout");
+                    resolve();
+                    return;
+                }
+                edgeTraversingCount++;
+                ts.strictSame(context.agvId, agvId);
+                ts.equal(context.order, order);
+                ts.strictSame(context.order, order);
+                if (!expectedChanges.isStitching) {
+                    ts.equal(edgeTraversingCount, invocationCount);
+                    ts.equal(edge, context.order.edges[edgeTraversedIndex + 1]);
+                    ts.equal(nodeTraversedIndex, edgeTraversedIndex + 1);
+                    ts.equal(startNode, context.order.nodes[edgeTraversedIndex + 1]);
+                    ts.equal(endNode, context.order.nodes[edgeTraversedIndex + 2]);
+                    if (edgeTraversingCount === 1) {
+                        ts.equal(stateChanges.distanceSinceLastNode, undefined);
+                        ts.equal(stateChanges.newBaseRequest, undefined);
+                        ts.equal(stateChanges.operatingMode, __1.OperatingMode.Automatic);
+                        ts.equal(stateChanges.safetyState.eStop, __1.EStop.None);
+                        ts.equal(stateChanges.safetyState.fieldViolation, false);
+                    }
+                    else {
+                        ts.equal("distanceSinceLastNode" in stateChanges, false);
+                        ts.equal("newBaseRequest" in stateChanges, false);
+                        ts.equal("operatingMode" in stateChanges, false);
+                        ts.equal("safetyState" in stateChanges, false);
+                    }
+                }
+                if (expectedChanges.triggerOnEdgeTraversing && !triggeredOnEdgeTraversing) {
+                    triggeredOnEdgeTraversing = true;
+                    expectedChanges.triggerOnEdgeTraversing(ts, edge.edgeId, resolve);
+                }
+            },
+            onActionStateChanged: (actionState, withError, action, target, context) => {
+                var _a;
+                if (failAfter !== undefined) {
+                    ts.fail("onActionStateChanged should not be called because of failAfter timeout");
+                    resolve();
+                    return;
+                }
+                const targetActions = target.actions;
+                const actionIndex = targetActions.indexOf(action);
+                ts.not(actionIndex, -1);
+                ts.equal(actionState.actionType, action.actionType);
+                ts.equal(actionState.actionId, action.actionId);
+                ts.equal(actionState.actionDescription, action.actionDescription);
+                if (actionState.actionStatus === __1.ActionStatus.Failed && ((_a = expectedChanges.actionErrorRefs) === null || _a === void 0 ? void 0 : _a.length) > 0) {
+                    ts.not(withError, undefined);
+                    ts.equal(withError.errorType, __1.ErrorType.OrderAction);
+                    ts.ok(expectedChanges.actionErrorRefs.every(er => withError.errorReferences.some(r => r.referenceKey === er.referenceKey && r.referenceValue === er.referenceValue)));
+                }
+                else {
+                    ts.equal(withError, undefined);
+                }
+                if (!triggeredOnActionInitializing &&
+                    actionState.actionStatus === __1.ActionStatus.Initializing &&
+                    expectedChanges.triggerOnActionInitializing) {
+                    triggeredOnActionInitializing = true;
+                    expectedChanges.triggerOnActionInitializing(ts, action, resolve);
+                }
+            },
+        });
+        if (headeredOrder === undefined) {
+            if (expectedChanges.discardedByMc) {
+                ts.pass("Assigned order has been discarded by mc");
+            }
+            else {
+                ts.fail("Assigned order has been discarded by mc");
+            }
+            resolve();
+        }
+    }));
+}
+(0, test_context_1.initTestContext)(tap);
+tap.test("Master Controller - AGV Controller", async (t) => {
+    const agvId1 = (0, test_objects_1.createAgvId)("RobotCompany", "001");
+    const agvId2 = (0, test_objects_1.createAgvId)("RobotCompany", "002");
+    const agvId3 = (0, test_objects_1.createAgvId)("RobotCompany", "003");
+    const mcController = new __1.MasterController((0, test_context_1.testClientOptions)(t), {});
+    const mcControllerWithoutValidation = new __1.MasterController({
+        ...(0, test_context_1.testClientOptions)(t),
+        topicObjectValidation: { inbound: true, outbound: false },
+    }, {});
+    const agvControllerOptions1 = { agvAdapterType: __1.VirtualAgvAdapter };
+    const agvAdapterOptions1 = { initialBatteryCharge: 80, timeLapse: 100 };
+    const agvController1 = new __1.AgvController(agvId1, (0, test_context_1.testClientOptions)(t), agvControllerOptions1, agvAdapterOptions1);
+    const agvControllerOptions2 = {
+        agvAdapterType: __1.VirtualAgvAdapter,
+        publishVisualizationInterval: 0,
+    };
+    const agvAdapterOptions2 = { initialBatteryCharge: 80, timeLapse: 100 };
+    const agvController2 = new __1.AgvController(agvId2, (0, test_context_1.testClientOptions)(t), agvControllerOptions2, agvAdapterOptions2);
+    const agvControllerOptions3 = { agvAdapterType: __1.VirtualAgvAdapter };
+    const agvAdapterOptions3 = { initialBatteryCharge: 80, timeLapse: 100 };
+    const agvController3 = new __1.AgvController(agvId3, (0, test_context_1.testClientOptions)(t), agvControllerOptions3, agvAdapterOptions3);
+    t.teardown(() => agvController1.stop());
+    t.teardown(() => agvController2.stop());
+    t.teardown(() => agvController3.stop());
+    t.teardown(() => mcController.stop());
+    t.teardown(() => mcControllerWithoutValidation.stop());
+    await t.test("start AGV Controller 1", () => agvController1.start());
+    await t.test("start AGV Controller 2", () => agvController2.start());
+    await t.test("start AGV Controller 3", () => agvController3.start());
+    await t.test("start Master Controller", () => mcController.start());
+    await t.test("start Master Controller without validation", () => mcControllerWithoutValidation.start());
+    t.test("adapter name", ts => {
+        ts.equal(agvController1["_agvAdapter"].name, "VirtualAgvAdapter");
+        ts.end();
+    });
+    await t.test("visualization received while not driving", ts => new Promise(async (resolve) => {
+        let invocations = 0;
+        let lastTimestamp;
+        await mcController.subscribe(__1.Topic.Visualization, agvId1, async (vis, _agvId, _topic, subscriptionId) => {
+            invocations++;
+            ts.strictSame(vis.agvPosition, { x: 0, y: 0, theta: 0, mapId: "local", positionInitialized: true });
+            ts.strictSame(vis.velocity, { vx: 0, vy: 0, omega: 0 });
+            if (lastTimestamp !== undefined) {
+                ts.not(lastTimestamp, vis.timestamp);
+            }
+            lastTimestamp = vis.timestamp;
+            if (invocations === 3) {
+                await mcController.unsubscribe(subscriptionId);
+                resolve();
+            }
+        });
+    }));
+    await t.test("visualization not received if feature disabled", ts => new Promise(async (resolve) => {
+        let tsFailed = false;
+        const subscriptionId = await mcController.subscribe(__1.Topic.Visualization, agvId2, async () => {
+            tsFailed = true;
+        });
+        setTimeout(async () => {
+            tsFailed ?
+                ts.fail("visualization should not have been received") :
+                ts.pass("no visualization received");
+            await mcController.unsubscribe(subscriptionId);
+            resolve();
+        }, 3000);
+    }));
+    await t.test("instant action invalid - not well-formed", ts => new Promise(async (resolve) => {
+        let errorInvocations = 0;
+        const actions = await mcControllerWithoutValidation.initiateInstantActions(agvId3, {
+            actions: [{
+                    actionId: (0, __1.createUuid)(),
+                    actionType: 42,
+                    blockingType: __1.BlockingType.Hard,
+                }],
+        }, {
+            onActionStateChanged: () => {
+                ts.fail("onActionStateChanged should never be called");
+                resolve();
+            },
+            onActionError: (error, action) => {
+                errorInvocations++;
+                ts.equal(errorInvocations, 1);
+                ts.strictSame(action, actions.actions[0]);
+                ts.equal(error.errorLevel, __1.ErrorLevel.Warning);
+                ts.equal(error.errorType, __1.ErrorType.InstantActionValidation);
+                ts.ok(!error.errorReferences.some(r => r.referenceKey === "topic") ||
+                    error.errorReferences.some(r => r.referenceKey === "topic" && r.referenceValue === __1.Topic.InstantActions));
+                resolve();
+            },
+        });
+    }));
+    await t.test("instant action cancelOrder rejected with error", ts => new Promise(async (resolve) => {
+        let errorInvocations = 0;
+        const actions = await mcController.initiateInstantActions(agvId1, {
+            actions: [{
+                    actionId: (0, __1.createUuid)(),
+                    actionType: "cancelOrder",
+                    blockingType: __1.BlockingType.Hard,
+                }],
+        }, {
+            onActionStateChanged: () => {
+                ts.fail("onActionStateChanged should never be called");
+                resolve();
+            },
+            onActionError: (error, action) => {
+                errorInvocations++;
+                ts.equal(errorInvocations, 1);
+                ts.strictSame(action, actions.actions[0]);
+                ts.equal(error.errorLevel, __1.ErrorLevel.Warning);
+                ts.equal(error.errorType, __1.ErrorType.InstantActionNoOrderToCancel);
+                ts.ok(!error.errorReferences.some(r => r.referenceKey === "topic") ||
+                    error.errorReferences.some(r => r.referenceKey === "topic" && r.referenceValue === __1.Topic.InstantActions));
+                ts.ok(error.errorReferences.some(r => r.referenceKey === "actionId" && r.referenceValue === action.actionId));
+                ts.ok(error.errorReferences.some(r => r.referenceKey === "actionType" && r.referenceValue === action.actionType));
+                resolve();
+            },
+        });
+    }));
+    await t.test("instant action pick rejected with error", ts => new Promise(async (resolve) => {
+        let errorInvocations = 0;
+        const actions = await mcController.initiateInstantActions(agvId1, {
+            actions: [createPickDropNoopAction("pick")],
+        }, {
+            onActionStateChanged: () => {
+                ts.fail("onActionStateChanged should never be called");
+                resolve();
+            },
+            onActionError: (error, action) => {
+                errorInvocations++;
+                ts.equal(errorInvocations, 1);
+                ts.strictSame(action, actions.actions[0]);
+                ts.equal(error.errorLevel, __1.ErrorLevel.Warning);
+                ts.equal(error.errorType, __1.ErrorType.InstantAction);
+                ts.ok(!error.errorReferences.some(r => r.referenceKey === "topic") ||
+                    error.errorReferences.some(r => r.referenceKey === "topic" && r.referenceValue === __1.Topic.InstantActions));
+                ts.ok(error.errorReferences.some(r => r.referenceKey === "actionId" && r.referenceValue === action.actionId));
+                ts.ok(error.errorReferences.some(r => r.referenceKey === "actionType" && r.referenceValue === action.actionType));
+                resolve();
+            },
+        });
+    }));
+    await t.test("instant action initPosition twice in series as hard blocking action", ts => new Promise(async (resolve) => {
+        let actionStateInvocations = 0;
+        const actions = await mcController.initiateInstantActions(agvId1, {
+            actions: [{
+                    actionId: (0, __1.createUuid)(),
+                    actionDescription: "initialize position to x:10 y:10 on floor2 map",
+                    actionType: "initPosition",
+                    blockingType: __1.BlockingType.Hard,
+                    actionParameters: [
+                        { key: "x", value: 10 },
+                        { key: "y", value: 10 },
+                        { key: "theta", value: 0 },
+                        { key: "mapId", value: "floor2" },
+                        { key: "lastNodeId", value: "n1" },
+                        { key: "lastNodeSequenceId", value: 1 },
+                    ],
+                },
+                {
+                    actionId: (0, __1.createUuid)(),
+                    actionDescription: "initialize position to x:0 y:0 on local map",
+                    actionType: "initPosition",
+                    blockingType: __1.BlockingType.Hard,
+                    actionParameters: [
+                        { key: "x", value: 0 },
+                        { key: "y", value: 0 },
+                        { key: "theta", value: 0 },
+                        { key: "mapId", value: "local" },
+                        { key: "lastNodeId", value: "" },
+                    ],
+                }],
+        }, {
+            onActionStateChanged: (actionState, withError, action, _agvId, state) => {
+                actionStateInvocations++;
+                ts.ok(actionStateInvocations === 1 || actionStateInvocations === 2);
+                if (actionStateInvocations === 1) {
+                    ts.strictSame(action, actions.actions[0]);
+                    ts.equal(withError, undefined);
+                    ts.equal(actionState.actionId, actions.actions[0].actionId);
+                    ts.equal(actionState.actionStatus, __1.ActionStatus.Finished);
+                    ts.equal(actionState.actionDescription, actions.actions[0].actionDescription);
+                    ts.equal(actionState.resultDescription, "Position initialized");
+                    ts.strictSame(state.agvPosition, { x: 10, y: 10, theta: 0, mapId: "floor2", positionInitialized: true });
+                    ts.equal(state.lastNodeId, "n1");
+                    ts.equal(state.lastNodeSequenceId, 1);
+                }
+                else {
+                    ts.strictSame(action, actions.actions[1]);
+                    ts.equal(withError, undefined);
+                    ts.equal(actionState.actionId, actions.actions[1].actionId);
+                    ts.equal(actionState.actionStatus, __1.ActionStatus.Finished);
+                    ts.equal(actionState.actionDescription, actions.actions[1].actionDescription);
+                    ts.equal(actionState.resultDescription, "Position initialized");
+                    ts.strictSame(state.agvPosition, { x: 0, y: 0, theta: 0, mapId: "local", positionInitialized: true });
+                    ts.equal(state.lastNodeId, "");
+                    ts.equal(state.lastNodeSequenceId, 0);
+                    resolve();
+                }
+            },
+            onActionError: () => {
+                ts.fail("onActionError should never be called");
+                resolve();
+            },
+        });
+    }));
+    await t.test("instant actions startPause-stopPause in series as hard blocking actions", ts => new Promise(async (resolve) => {
+        let actionStateInvocations = 0;
+        const actions = await mcController.initiateInstantActions(agvId1, {
+            actions: [{
+                    actionId: (0, __1.createUuid)(),
+                    actionType: "startPause",
+                    blockingType: __1.BlockingType.Hard,
+                },
+                {
+                    actionId: (0, __1.createUuid)(),
+                    actionType: "stopPause",
+                    blockingType: __1.BlockingType.Hard,
+                }],
+        }, {
+            onActionStateChanged: (actionState, withError, action, _agvId, state) => {
+                actionStateInvocations++;
+                ts.ok(actionStateInvocations === 1 || actionStateInvocations === 2);
+                if (actionStateInvocations === 1) {
+                    ts.strictSame(action, actions.actions[0]);
+                    ts.equal(withError, undefined);
+                    ts.equal(actionState.actionId, actions.actions[0].actionId);
+                    ts.equal(actionState.actionStatus, __1.ActionStatus.Finished);
+                    ts.equal(actionState.actionDescription, actions.actions[0].actionDescription);
+                    ts.equal(actionState.resultDescription, "Paused");
+                    ts.equal(state.paused, true);
+                }
+                else {
+                    ts.strictSame(action, actions.actions[1]);
+                    ts.equal(withError, undefined);
+                    ts.equal(actionState.actionId, actions.actions[1].actionId);
+                    ts.equal(actionState.actionStatus, __1.ActionStatus.Finished);
+                    ts.equal(actionState.actionDescription, actions.actions[1].actionDescription);
+                    ts.equal(actionState.resultDescription, "Unpaused");
+                    ts.equal(state.paused, false);
+                    resolve();
+                }
+            },
+            onActionError: () => {
+                ts.fail("onActionError should never be called");
+                resolve();
+            },
+        });
+    }));
+    await t.test("instant action orderExecutionTime", ts => new Promise(async (resolve) => {
+        let actionStateInvocations = 0;
+        const actions = await mcController.initiateInstantActions(agvId1, {
+            actions: [{
+                    actionId: (0, __1.createUuid)(),
+                    actionType: "orderExecutionTime",
+                    blockingType: __1.BlockingType.None,
+                    actionParameters: [{ key: "orders", value: [createHeaderlessOrder()] }],
+                }],
+        }, {
+            onActionStateChanged: (actionState, withError, action) => {
+                actionStateInvocations++;
+                ts.equal(actionStateInvocations, 1);
+                ts.strictSame(action, actions.actions[0]);
+                ts.equal(withError, undefined);
+                ts.equal(actionState.actionId, actions.actions[0].actionId);
+                ts.equal(actionState.actionStatus, __1.ActionStatus.Finished);
+                ts.equal(actionState.actionDescription, actions.actions[0].actionDescription);
+                ts.equal(parseFloat(actionState.resultDescription), 62);
+                resolve();
+            },
+            onActionError: () => {
+                ts.fail("onActionError should never be called");
+                resolve();
+            },
+        });
+    }));
+    await t.test("instant action orderExecutionTime with non-default durations", ts => new Promise(async (resolve) => {
+        let actionStateInvocations = 0;
+        const pickAction1 = createPickDropNoopAction("pick");
+        pickAction1.actionParameters.push({ key: "duration", value: 3 });
+        const dropAction1 = createPickDropNoopAction("drop");
+        dropAction1.actionParameters.push({ key: "duration", value: 2 });
+        const noopAction1 = createPickDropNoopAction("noop");
+        noopAction1.actionParameters.push({ key: "duration", value: 1 });
+        const noopAction2 = createPickDropNoopAction("noop");
+        noopAction2.actionParameters.push({ key: "duration", value: 1 });
+        const actions = await mcController.initiateInstantActions(agvId1, {
+            actions: [{
+                    actionId: (0, __1.createUuid)(),
+                    actionType: "orderExecutionTime",
+                    blockingType: __1.BlockingType.None,
+                    actionParameters: [
+                        {
+                            key: "orders",
+                            value: [createHeaderlessOrder([[pickAction1, noopAction1], [dropAction1, noopAction2]])],
+                        }
+                    ],
+                }],
+        }, {
+            onActionStateChanged: (actionState, withError, action) => {
+                actionStateInvocations++;
+                ts.equal(actionStateInvocations, 1);
+                ts.strictSame(action, actions.actions[0]);
+                ts.equal(withError, undefined);
+                ts.equal(actionState.actionId, actions.actions[0].actionId);
+                ts.equal(actionState.actionStatus, __1.ActionStatus.Finished);
+                ts.equal(actionState.actionDescription, actions.actions[0].actionDescription);
+                ts.equal(parseFloat(actionState.resultDescription), 59);
+                resolve();
+            },
+            onActionError: () => {
+                ts.fail("onActionError should never be called");
+                resolve();
+            },
+        });
+    }));
+    await t.test("instant actions startCharging-stopCharging", ts => new Promise(async (resolve) => {
+        let actionStateInvocations = 0;
+        const actions = await mcController.initiateInstantActions(agvId1, {
+            actions: [{
+                    actionId: (0, __1.createUuid)(),
+                    actionType: "startCharging",
+                    blockingType: __1.BlockingType.Hard,
+                }],
+        }, {
+            onActionStateChanged: async (actionState, withError, action, _agvId, state) => {
+                actionStateInvocations++;
+                ts.ok(actionStateInvocations === 1 || actionStateInvocations === 2);
+                ts.strictSame(action, actions.actions[0]);
+                ts.equal(withError, undefined);
+                ts.equal(actionState.actionId, actions.actions[0].actionId);
+                ts.equal(actionState.actionDescription, actions.actions[0].actionDescription);
+                ts.equal(actionState.actionStatus, actionStateInvocations === 1 ? __1.ActionStatus.Running : __1.ActionStatus.Finished);
+                ts.equal(actionState.resultDescription, actionStateInvocations === 1 ? undefined : "Started charging");
+                ts.equal(state.batteryState.charging, actionStateInvocations === 1 ? false : true);
+                if (actionStateInvocations === 1) {
+                    return;
+                }
+                const reachOnCharging = state.batteryState.reach;
+                let stateChangesReceived = 0;
+                let isStoppingCharging = false;
+                await mcController.subscribe(__1.Topic.State, agvId1, async (state1, _agvId1, _topic1, subscriptionId) => {
+                    stateChangesReceived++;
+                    if (!isStoppingCharging && state1.batteryState.batteryCharge > 90) {
+                        isStoppingCharging = true;
+                        let actionStateInvocations1 = 0;
+                        const actions1 = await mcController.initiateInstantActions(agvId1, {
+                            actions: [{
+                                    actionId: (0, __1.createUuid)(),
+                                    actionType: "stopCharging",
+                                    blockingType: __1.BlockingType.Hard,
+                                }],
+                        }, {
+                            onActionStateChanged: async (actionState1, withError1, action1, _agvId11, state11) => {
+                                actionStateInvocations1++;
+                                ts.ok(actionStateInvocations1 === 1 || actionStateInvocations1 === 2);
+                                ts.strictSame(action1, actions1.actions[0]);
+                                ts.equal(withError1, undefined);
+                                ts.equal(actionState1.actionId, actions1.actions[0].actionId);
+                                ts.equal(actionState1.actionDescription, actions1.actions[0].actionDescription);
+                                ts.equal(actionState1.actionStatus, actionStateInvocations1 === 1 ? __1.ActionStatus.Running : __1.ActionStatus.Finished);
+                                ts.equal(actionState1.resultDescription, actionStateInvocations1 === 1 ? undefined : "Stopped charging");
+                                ts.equal(state11.batteryState.charging, actionStateInvocations1 === 1 ? true : false);
+                                if (actionStateInvocations1 === 2) {
+                                    ts.ok(stateChangesReceived >= 9);
+                                    ts.ok(state11.batteryState.reach - reachOnCharging >= 25920 - 23040);
+                                    ts.ok(state11.batteryState.reach - reachOnCharging <= 28800 - 23040);
+                                    await mcController.unsubscribe(subscriptionId);
+                                    resolve();
+                                }
+                            },
+                            onActionError: () => {
+                                ts.fail("onActionError should never be called");
+                                resolve();
+                            },
+                        });
+                    }
+                });
+            },
+            onActionError: () => {
+                ts.fail("onActionError should never be called");
+                resolve();
+            },
+        });
+    }));
+    await testOrderError(t, "order invalid - not well-formed orderUpdateId", __1.ErrorType.OrderValidation, mcControllerWithoutValidation, agvId3, {
+        orderId: "o42",
+        orderUpdateId: "foo",
+        nodes: [{ nodeId: "n1", sequenceId: 0, released: true, actions: [] }],
+        edges: [],
+    }, undefined, 500, { referenceKey: "topic", referenceValue: __1.Topic.Order }, { referenceKey: "orderId", referenceValue: "o42" }, { referenceKey: "orderUpdateId", referenceValue: "foo" });
+    await testOrderError(t, "order invalid - nodes empty", __1.ErrorType.OrderValidation, mcControllerWithoutValidation, agvId3, {
+        orderId: "o42",
+        orderUpdateId: 0,
+        nodes: [],
+        edges: [],
+    }, undefined, undefined, { referenceKey: "topic", referenceValue: __1.Topic.Order }, { referenceKey: "orderId", referenceValue: "o42" }, { referenceKey: "orderUpdateId", referenceValue: "0" });
+    await testOrderError(t, "order invalid - invalid node sequenceId", __1.ErrorType.OrderValidation, mcControllerWithoutValidation, agvId3, {
+        orderId: "o42",
+        orderUpdateId: 1,
+        nodes: [{ nodeId: "n1", sequenceId: 1, released: true, actions: [] }],
+        edges: [],
+    }, undefined, undefined, { referenceKey: "topic", referenceValue: __1.Topic.Order }, { referenceKey: "orderId", referenceValue: "o42" }, { referenceKey: "orderUpdateId", referenceValue: "1" });
+    await testOrderError(t, "order invalid - invalid node horizon", __1.ErrorType.OrderValidation, mcControllerWithoutValidation, agvId3, {
+        orderId: "o42",
+        orderUpdateId: 2,
+        nodes: [
+            { nodeId: "n1", sequenceId: 0, released: false, actions: [] },
+            { nodeId: "n2", sequenceId: 2, released: true, nodePosition: { x: 0, y: 0, mapId: "local" }, actions: [] },
+        ],
+        edges: [{ edgeId: "e12", sequenceId: 1, startNodeId: "n1", endNodeId: "n2", released: true, actions: [] }],
+    }, undefined, undefined, { referenceKey: "topic", referenceValue: __1.Topic.Order }, { referenceKey: "orderId", referenceValue: "o42" }, { referenceKey: "orderUpdateId", referenceValue: "2" });
+    await testOrderError(t, "order invalid - invalid number of edges", __1.ErrorType.OrderValidation, mcControllerWithoutValidation, agvId3, {
+        orderId: "o42",
+        orderUpdateId: 3,
+        nodes: [
+            { nodeId: "n1", sequenceId: 0, released: true, actions: [] },
+            { nodeId: "n2", sequenceId: 2, released: true, nodePosition: { x: 0, y: 0, mapId: "local" }, actions: [] },
+        ],
+        edges: [],
+    }, undefined, undefined, { referenceKey: "topic", referenceValue: __1.Topic.Order }, { referenceKey: "orderId", referenceValue: "o42" }, { referenceKey: "orderUpdateId", referenceValue: "3" });
+    await testOrderError(t, "order invalid - invalid edge sequenceId", __1.ErrorType.OrderValidation, mcControllerWithoutValidation, agvId3, {
+        orderId: "o42",
+        orderUpdateId: 4,
+        nodes: [
+            { nodeId: "n1", sequenceId: 0, released: true, actions: [] },
+            { nodeId: "n2", sequenceId: 2, released: true, nodePosition: { x: 0, y: 0, mapId: "local" }, actions: [] },
+        ],
+        edges: [{ edgeId: "e12", sequenceId: 2, startNodeId: "n1", endNodeId: "n2", released: true, actions: [] }],
+    }, undefined, undefined, { referenceKey: "topic", referenceValue: __1.Topic.Order }, { referenceKey: "orderId", referenceValue: "o42" }, { referenceKey: "orderUpdateId", referenceValue: "4" });
+    await testOrderError(t, "order invalid - invalid edge horizon", __1.ErrorType.OrderValidation, mcControllerWithoutValidation, agvId3, {
+        orderId: "o42",
+        orderUpdateId: 5,
+        nodes: [
+            { nodeId: "n1", sequenceId: 0, released: true, actions: [] },
+            { nodeId: "n2", sequenceId: 2, released: true, nodePosition: { x: 0, y: 0, mapId: "local" }, actions: [] },
+        ],
+        edges: [{ edgeId: "e12", sequenceId: 1, startNodeId: "n1", endNodeId: "n2", released: false, actions: [] }],
+    }, undefined, undefined, { referenceKey: "topic", referenceValue: __1.Topic.Order }, { referenceKey: "orderId", referenceValue: "o42" }, { referenceKey: "orderUpdateId", referenceValue: "5" });
+    await testOrderError(t, "order invalid - invalid edge start end nodes", __1.ErrorType.OrderValidation, mcControllerWithoutValidation, agvId3, {
+        orderId: "o42",
+        orderUpdateId: 6,
+        nodes: [
+            { nodeId: "n1", sequenceId: 0, released: true, actions: [] },
+            { nodeId: "n2", sequenceId: 2, released: true, nodePosition: { x: 0, y: 0, mapId: "local" }, actions: [] },
+        ],
+        edges: [{ edgeId: "e12", sequenceId: 1, startNodeId: "n2", endNodeId: "n1", released: true, actions: [] }],
+    }, undefined, undefined, { referenceKey: "topic", referenceValue: __1.Topic.Order }, { referenceKey: "orderId", referenceValue: "o42" }, { referenceKey: "orderUpdateId", referenceValue: "6" });
+    await testOrderError(t, "order invalid - incorrect mapId", __1.ErrorType.OrderNoRoute, mcControllerWithoutValidation, agvId3, {
+        orderId: (0, __1.createUuid)(),
+        orderUpdateId: 0,
+        nodes: [{ nodeId: "n1", sequenceId: 0, released: true, nodePosition: { x: 0, y: 0, mapId: "foo" }, actions: [] }],
+        edges: [],
+    }, undefined, undefined, { referenceKey: "nodeId", referenceValue: "n1" }, { referenceKey: "nodePosition.mapId", referenceValue: "local" }, { referenceKey: "orderUpdateId", referenceValue: "0" });
+    await testOrderError(t, "order invalid - nodePosition missing", __1.ErrorType.OrderNoRoute, mcControllerWithoutValidation, agvId3, {
+        orderId: (0, __1.createUuid)(),
+        orderUpdateId: 0,
+        nodes: [
+            { nodeId: "n1", sequenceId: 0, released: true, actions: [] },
+            { nodeId: "n2", sequenceId: 2, released: true, actions: [] },
+        ],
+        edges: [
+            { edgeId: "e12", sequenceId: 1, startNodeId: "n1", endNodeId: "n2", released: true, actions: [] },
+        ],
+    }, undefined, undefined, { referenceKey: "nodeId", referenceValue: "n2" }, { referenceKey: "nodePosition", referenceValue: "undefined" }, { referenceKey: "orderUpdateId", referenceValue: "0" });
+    await testOrderError(t, "order invalid - first node not within deviation range", __1.ErrorType.OrderNoRoute, mcControllerWithoutValidation, agvId3, {
+        orderId: (0, __1.createUuid)(),
+        orderUpdateId: 0,
+        nodes: [{ nodeId: "n1", sequenceId: 0, released: true, nodePosition: { x: 1, y: 1, mapId: "local" }, actions: [] }],
+        edges: [],
+    }, undefined, undefined, { referenceKey: "nodeId", referenceValue: "n1" }, { referenceKey: "nodePosition.allowedDeviationXY", referenceValue: "0.5" }, { referenceKey: "orderUpdateId", referenceValue: "0" });
+    await testOrderError(t, "order invalid - node action not supported", __1.ErrorType.Order, mcControllerWithoutValidation, agvId3, {
+        orderId: (0, __1.createUuid)(),
+        orderUpdateId: 0,
+        nodes: [
+            {
+                nodeId: "n1", sequenceId: 0, released: true,
+                actions: [{ actionId: "a001", actionType: "puck", blockingType: __1.BlockingType.Hard }],
+            }
+        ],
+        edges: [],
+    }, undefined, undefined, { referenceKey: "actionId", referenceValue: "a001" }, { referenceKey: "actionType", referenceValue: "puck" }, { referenceKey: "orderUpdateId", referenceValue: "0" });
+    await testOrderError(t, "order invalid - edge action not supported", __1.ErrorType.Order, mcControllerWithoutValidation, agvId3, {
+        orderId: (0, __1.createUuid)(),
+        orderUpdateId: 0,
+        nodes: [
+            { nodeId: "n1", sequenceId: 0, released: true, actions: [] },
+            { nodeId: "n2", sequenceId: 2, released: true, nodePosition: { x: 10, y: 10, mapId: "local" }, actions: [] },
+        ],
+        edges: [
+            {
+                edgeId: "e12", sequenceId: 1, startNodeId: "n1", endNodeId: "n2", released: true,
+                actions: [{ actionId: "a001", actionType: "puck", blockingType: __1.BlockingType.Hard }],
+            },
+        ],
+    }, undefined, undefined, { referenceKey: "actionId", referenceValue: "a001" }, { referenceKey: "actionType", referenceValue: "puck" }, { referenceKey: "orderUpdateId", referenceValue: "0" });
+    await testOrderError(t, "order invalid - missing action parameter", __1.ErrorType.Order, mcControllerWithoutValidation, agvId3, {
+        orderId: (0, __1.createUuid)(),
+        orderUpdateId: 0,
+        nodes: [
+            {
+                nodeId: "n1", sequenceId: 0, released: true,
+                actions: [{ actionId: "a001", actionType: "pick", blockingType: __1.BlockingType.Hard }],
+            }
+        ],
+        edges: [],
+    }, undefined, undefined, { referenceKey: "actionId", referenceValue: "a001" }, { referenceKey: "actionType", referenceValue: "pick" }, { referenceKey: "actionParameter", referenceValue: "stationType" }, { referenceKey: "orderUpdateId", referenceValue: "0" });
+    await testOrderError(t, "order invalid - invalid action parameter", __1.ErrorType.Order, mcControllerWithoutValidation, agvId3, {
+        orderId: (0, __1.createUuid)(),
+        orderUpdateId: 0,
+        nodes: [
+            {
+                nodeId: "n1", sequenceId: 0, released: true,
+                actions: [{
+                        actionId: "a001", actionType: "drop", blockingType: __1.BlockingType.Hard,
+                        actionParameters: [
+                            { key: "stationType", value: "high-rack" },
+                            { key: "loadType", value: "EPAL" },
+                        ],
+                    }],
+            }
+        ],
+        edges: [],
+    }, undefined, undefined, { referenceKey: "actionId", referenceValue: "a001" }, { referenceKey: "actionType", referenceValue: "drop" }, { referenceKey: "actionParameter", referenceValue: "stationType" }, { referenceKey: "orderUpdateId", referenceValue: "0" });
+    await testOrderError(t, "order not executable while charging", __1.ErrorType.Order, mcControllerWithoutValidation, agvId3, {
+        orderId: (0, __1.createUuid)(),
+        orderUpdateId: 0,
+        nodes: [{ nodeId: "n1", sequenceId: 0, released: true, actions: [] }],
+        edges: [],
+    }, { ac: agvController3, keyChain: "batteryState.charging", newValue: true }, undefined, { referenceKey: "batteryState.charging", referenceValue: "true" }, { referenceKey: "orderUpdateId", referenceValue: "0" });
+    await testOrderError(t, "order not executable as emergency stop is active", __1.ErrorType.Order, mcControllerWithoutValidation, agvId3, {
+        orderId: (0, __1.createUuid)(),
+        orderUpdateId: 0,
+        nodes: [{ nodeId: "n1", sequenceId: 0, released: true, actions: [] }],
+        edges: [],
+    }, { ac: agvController3, keyChain: "safetyState.eStop", newValue: "MANUAL" }, undefined, { referenceKey: "safetyState.eStop", referenceValue: "MANUAL" }, { referenceKey: "orderUpdateId", referenceValue: "0" });
+    await testOrderError(t, "order not executable due to protective field violation", __1.ErrorType.Order, mcControllerWithoutValidation, agvId3, {
+        orderId: (0, __1.createUuid)(),
+        orderUpdateId: 0,
+        nodes: [{ nodeId: "n1", sequenceId: 0, released: true, actions: [] }],
+        edges: [],
+    }, { ac: agvController3, keyChain: "safetyState.fieldViolation", newValue: true }, undefined, { referenceKey: "safetyState.fieldViolation", referenceValue: "true" }, { referenceKey: "orderUpdateId", referenceValue: "0" });
+    await testOrderError(t, "order not executable due to operating mode", __1.ErrorType.Order, mcControllerWithoutValidation, agvId3, {
+        orderId: (0, __1.createUuid)(),
+        orderUpdateId: 0,
+        nodes: [{ nodeId: "n1", sequenceId: 0, released: true, actions: [] }],
+        edges: [],
+    }, { ac: agvController3, keyChain: "operatingMode", newValue: "SERVICE" }, undefined, { referenceKey: "operatingMode", referenceValue: "SERVICE" }, { referenceKey: "orderUpdateId", referenceValue: "0" });
+    await testOrder(t, "execute new order with one base node", mcController, agvId1, {
+        orderId: (0, __1.createUuid)(),
+        orderUpdateId: 0,
+        nodes: [{ nodeId: "n1", sequenceId: 0, released: true, actions: [] }],
+        edges: [],
+    }, { completes: true });
+    await testOrder(t, "execute new order with two base nodes", mcController, agvId1, {
+        orderId: (0, __1.createUuid)(),
+        orderUpdateId: 0,
+        nodes: [
+            { nodeId: "n1", sequenceId: 0, released: true, actions: [] },
+            { nodeId: "n2", sequenceId: 2, released: true, nodePosition: { x: -10, y: 0, mapId: "local" }, actions: [] },
+        ],
+        edges: [
+            { edgeId: "e12", sequenceId: 1, startNodeId: "n1", endNodeId: "n2", released: true, actions: [] },
+        ],
+    }, { completes: true });
+    await testOrder(t, "execute new cyclic order with three base nodes", mcController, agvId1, {
+        orderId: (0, __1.createUuid)(),
+        orderUpdateId: 0,
+        nodes: [
+            { nodeId: "n1", sequenceId: 0, released: true, actions: [] },
+            { nodeId: "n2", sequenceId: 2, released: true, nodePosition: { x: 10, y: 10, mapId: "local" }, actions: [] },
+            { nodeId: "n1", sequenceId: 4, released: true, nodePosition: { x: 0, y: 0, mapId: "local" }, actions: [] },
+        ],
+        edges: [
+            { edgeId: "e12", sequenceId: 1, startNodeId: "n1", endNodeId: "n2", released: true, actions: [] },
+            { edgeId: "e21", sequenceId: 3, startNodeId: "n2", endNodeId: "n1", released: true, actions: [] },
+        ],
+    }, { completes: true });
+    let lastOrderId = (0, __1.createUuid)();
+    await testOrder(t, "execute new order with one base node and one horizon node", mcController, agvId1, {
+        orderId: lastOrderId,
+        orderUpdateId: 0,
+        nodes: [
+            { nodeId: "n1", sequenceId: 0, released: true, actions: [] },
+            { nodeId: "n2", sequenceId: 2, released: false, nodePosition: { x: 10, y: 10, mapId: "local" }, actions: [] },
+        ],
+        edges: [
+            { edgeId: "e12", sequenceId: 1, startNodeId: "n1", endNodeId: "n2", released: false, actions: [] },
+        ],
+    }, { completes: false });
+    await testOrder(t, "reject stitching order not extending active base node", mcController, agvId1, {
+        orderId: lastOrderId,
+        orderUpdateId: 1,
+        nodes: [
+            { nodeId: "n11", sequenceId: 0, released: true, actions: [] },
+            { nodeId: "n3", sequenceId: 2, released: true, nodePosition: { x: 20, y: 20, mapId: "local" }, actions: [] },
+        ],
+        edges: [
+            { edgeId: "e113", sequenceId: 1, startNodeId: "n11", endNodeId: "n3", released: true, actions: [] },
+        ],
+    }, {
+        completes: true,
+        isStitching: true,
+        errorRefs: [
+            { referenceKey: "topic", referenceValue: __1.Topic.Order },
+            { referenceKey: "orderId", referenceValue: lastOrderId },
+            { referenceKey: "orderUpdateId", referenceValue: "1" },
+        ],
+    });
+    await testOrder(t, "execute stitching order with one more base node and one horizon node, then stitch invalid order", mcController, agvId1, {
+        orderId: lastOrderId,
+        orderUpdateId: 1,
+        nodes: [
+            { nodeId: "n1", sequenceId: 0, released: true, actions: [] },
+            { nodeId: "n3", sequenceId: 2, released: true, nodePosition: { x: 40, y: 40, mapId: "local" }, actions: [] },
+            { nodeId: "n4", sequenceId: 4, released: false, nodePosition: { x: 30, y: 30, mapId: "local" }, actions: [] },
+        ],
+        edges: [
+            { edgeId: "e13", sequenceId: 1, startNodeId: "n1", endNodeId: "n3", released: true, actions: [] },
+            { edgeId: "e34", sequenceId: 3, startNodeId: "n3", endNodeId: "n4", released: false, actions: [] },
+        ],
+    }, {
+        completes: false,
+        isStitching: true,
+        triggerOnEdgeTraversing: async (ts, edgeId, resolve) => {
+            if (edgeId !== "e13") {
+                return;
+            }
+            const result = await mcController.assignOrder(agvId1, {
+                orderId: lastOrderId,
+                orderUpdateId: 1,
+                nodes: [
+                    { nodeId: "n4", sequenceId: 0, released: true, nodePosition: { x: 30, y: 30, mapId: "local" }, actions: [] },
+                ],
+                edges: [],
+            }, {
+                onOrderProcessed: () => {
+                    ts.fail("onOrderProcessed should not be invoked on order discarded by mc");
+                },
+                onActionStateChanged: () => {
+                    ts.fail("onActionStateChanged should not be invoked on order discarded by mc");
+                },
+                onEdgeTraversed: () => {
+                    ts.fail("onEdgeTraversed should not be invoked on order discarded by mc");
+                },
+                onEdgeTraversing: () => {
+                    ts.fail("onEdgeTraversing should not be invoked on order discarded by mc");
+                },
+                onNodeTraversed: () => {
+                    ts.fail("onNodeTraversed should not be invoked on order discarded by mc");
+                },
+            });
+            ts.equal(result, undefined, "order discarded by mc");
+            resolve();
+        },
+    });
+    await testOrder(t, "order rejected by AGV - same orderId as active order and invalid orderUpdateId", mcController, agvId1, {
+        orderId: lastOrderId,
+        orderUpdateId: 0,
+        nodes: [{ nodeId: "n1", sequenceId: 0, released: true, actions: [] }],
+        edges: [],
+    }, {
+        completes: true,
+        isStitching: true,
+        errorRefs: [
+            { referenceKey: "topic", referenceValue: __1.Topic.Order },
+            { referenceKey: "orderId", referenceValue: lastOrderId },
+            { referenceKey: "orderUpdateId", referenceValue: "0" },
+        ],
+    });
+    lastOrderId = (0, __1.createUuid)();
+    await testOrder(t, "execute another stitching order with one more base node", mcController, agvId1, {
+        orderId: lastOrderId,
+        orderUpdateId: 0,
+        nodes: [
+            { nodeId: "n3", sequenceId: 2, released: true, nodePosition: { x: 40, y: 40, mapId: "local" }, actions: [] },
+            { nodeId: "n5", sequenceId: 4, released: true, nodePosition: { x: 30, y: 30, mapId: "local" }, actions: [] },
+        ],
+        edges: [
+            { edgeId: "e35", sequenceId: 3, startNodeId: "n3", endNodeId: "n5", released: true, actions: [] },
+        ],
+    }, {
+        completes: true,
+        isStitching: true,
+    });
+    await testOrder(t, "reject order update not matching last base node", mcController, agvId1, {
+        orderId: lastOrderId,
+        orderUpdateId: 1,
+        nodes: [
+            { nodeId: "n51", sequenceId: 4, released: true, nodePosition: { x: 30, y: 30, mapId: "local" }, actions: [] },
+            { nodeId: "n6", sequenceId: 6, released: true, nodePosition: { x: 0, y: 0, mapId: "local" }, actions: [] },
+        ],
+        edges: [
+            { edgeId: "e516", sequenceId: 5, startNodeId: "n51", endNodeId: "n6", released: true, actions: [] },
+        ],
+    }, {
+        completes: true,
+        errorRefs: [
+            { referenceKey: "topic", referenceValue: __1.Topic.Order },
+            { referenceKey: "orderId", referenceValue: lastOrderId },
+            { referenceKey: "orderUpdateId", referenceValue: "1" },
+        ],
+    });
+    await testOrder(t, "execute order update with one more base node", mcController, agvId1, {
+        orderId: lastOrderId,
+        orderUpdateId: 2,
+        nodes: [
+            { nodeId: "n5", sequenceId: 4, released: true, nodePosition: { x: 30, y: 30, mapId: "local" }, actions: [] },
+            { nodeId: "n1", sequenceId: 6, released: true, nodePosition: { x: 0, y: 0, mapId: "local" }, actions: [] },
+        ],
+        edges: [
+            { edgeId: "e56", sequenceId: 5, startNodeId: "n5", endNodeId: "n1", released: true, actions: [] },
+        ],
+    }, { completes: true });
+    lastOrderId = (0, __1.createUuid)();
+    await testOrder(t, "execute new order with two base nodes, then stitch with additional action while traversing edge", mcController, agvId1, {
+        orderId: lastOrderId,
+        orderUpdateId: 0,
+        nodes: [
+            { nodeId: "n1", sequenceId: 0, released: true, actions: [] },
+            {
+                nodeId: "n2", sequenceId: 2, released: true, nodePosition: { x: 10, y: 10, mapId: "local" },
+                actions: [createPickDropNoopAction("pick")],
+            },
+        ],
+        edges: [
+            { edgeId: "e12", sequenceId: 1, startNodeId: "n1", endNodeId: "n2", released: true, actions: [] },
+        ],
+    }, {
+        completes: true,
+        triggerOnEdgeTraversing: async (ts, edgeId) => {
+            if (edgeId !== "e12") {
+                return;
+            }
+            const result = await mcController.assignOrder(agvId1, {
+                orderId: (0, __1.createUuid)(),
+                orderUpdateId: 0,
+                nodes: [
+                    { nodeId: "n2", sequenceId: 2, released: true, actions: [createPickDropNoopAction("drop")] },
+                    { nodeId: "n3", sequenceId: 4, released: true, nodePosition: { x: 0, y: 0, mapId: "local" }, actions: [] },
+                ],
+                edges: [
+                    { edgeId: "e23", sequenceId: 3, startNodeId: "n2", endNodeId: "n3", released: true, actions: [] },
+                ],
+            }, {
+                onOrderProcessed: () => {
+                    ts.pass("onOrderProcessed invoked on stitching order");
+                    ts.endAll();
+                },
+                onActionStateChanged: () => {
+                    ts.pass("onActionStateChanged invoked on stitching order");
+                },
+                onEdgeTraversed: () => {
+                    ts.pass("onEdgeTraversed invoked on stitching order");
+                },
+                onEdgeTraversing: () => {
+                    ts.pass("onEdgeTraversing invoked on stitching order");
+                },
+                onNodeTraversed: node => {
+                    ts.pass("onNodeTraversed invoked on stitching order");
+                    if (node.nodeId === "n2" && node.sequenceId === 2) {
+                        ts.equal(node.actions.length, 2);
+                        ts.equal(node.actions[0].actionType, "pick");
+                        ts.equal(node.actions[1].actionType, "drop");
+                    }
+                },
+            });
+            ts.not(result, undefined, "stitching order assigned by mc");
+        },
+    });
+    await testOrder(t, "execute new order with two base nodes, then stitch with additional action while executing last order action", mcController, agvId1, {
+        orderId: (0, __1.createUuid)(),
+        orderUpdateId: 0,
+        nodes: [
+            { nodeId: "n1", sequenceId: 0, released: true, actions: [] },
+            {
+                nodeId: "n2", sequenceId: 2, released: true, nodePosition: { x: 10, y: 10, mapId: "local" },
+                actions: [createPickDropNoopAction("pick")],
+            },
+        ],
+        edges: [
+            { edgeId: "e12", sequenceId: 1, startNodeId: "n1", endNodeId: "n2", released: true, actions: [] },
+        ],
+    }, {
+        completes: true,
+        triggerOnActionInitializing: async (ts, action) => {
+            if (action.actionType !== "pick") {
+                return;
+            }
+            const result = await mcController.assignOrder(agvId1, {
+                orderId: (0, __1.createUuid)(),
+                orderUpdateId: 0,
+                nodes: [
+                    { nodeId: "n2", sequenceId: 2, released: true, actions: [createPickDropNoopAction("drop")] },
+                    { nodeId: "n3", sequenceId: 4, released: true, nodePosition: { x: 0, y: 0, mapId: "local" }, actions: [] },
+                ],
+                edges: [
+                    { edgeId: "e23", sequenceId: 3, startNodeId: "n2", endNodeId: "n3", released: true, actions: [] },
+                ],
+            }, {
+                onOrderProcessed: () => {
+                    ts.pass("onOrderProcessed invoked on stitching order");
+                    ts.endAll();
+                },
+                onActionStateChanged: () => {
+                    ts.pass("onActionStateChanged invoked on stitching order");
+                },
+                onEdgeTraversed: () => {
+                    ts.pass("onEdgeTraversed invoked on stitching order");
+                },
+                onEdgeTraversing: () => {
+                    ts.pass("onEdgeTraversing invoked on stitching order");
+                },
+                onNodeTraversed: node => {
+                    ts.pass("onNodeTraversed invoked on stitching order");
+                    if (node.nodeId === "n2" && node.sequenceId === 2) {
+                        ts.equal(node.actions.length, 2);
+                        ts.equal(node.actions[0].actionType, "pick");
+                        ts.equal(node.actions[1].actionType, "drop");
+                    }
+                },
+            });
+            ts.not(result, undefined, "stitching order assigned by mc");
+        },
+    });
+    lastOrderId = (0, __1.createUuid)();
+    const dropAction = createPickDropNoopAction("drop");
+    await testOrder(t, "execute new order with failing drop action - no load to drop", mcController, agvId1, {
+        orderId: lastOrderId,
+        orderUpdateId: 0,
+        nodes: [{ nodeId: "n1", sequenceId: 0, released: true, actions: [dropAction] }],
+        edges: [],
+    }, {
+        completes: true,
+        actionErrorRefs: [
+            { referenceKey: "topic", referenceValue: __1.Topic.Order },
+            { referenceKey: "actionId", referenceValue: dropAction.actionId },
+        ],
+    });
+    await testOrder(t, "execute order with pick and drop actions on one base node", mcController, agvId1, {
+        orderId: lastOrderId,
+        orderUpdateId: 1,
+        nodes: [{
+                nodeId: "n1", sequenceId: 0, released: true,
+                actions: [createPickDropNoopAction("pick"), createPickDropNoopAction("drop")],
+            }],
+        edges: [],
+    }, { completes: true });
+    await testOrder(t, "execute new order with two base nodes and pick-drop actions", mcController, agvId1, {
+        orderId: (0, __1.createUuid)(),
+        orderUpdateId: 0,
+        nodes: [
+            {
+                nodeId: "n1", sequenceId: 0, released: true,
+                actions: [createPickDropNoopAction("pick")],
+            },
+            {
+                nodeId: "n2", sequenceId: 2, released: true, nodePosition: { x: 10, y: 10, mapId: "local" },
+                actions: [createPickDropNoopAction("drop")],
+            },
+        ],
+        edges: [
+            { edgeId: "e12", sequenceId: 1, startNodeId: "n1", endNodeId: "n2", released: true, actions: [] },
+        ],
+    }, { completes: true });
+    await testOrder(t, "execute order with one base node and one horizon node to be canceled afterwards", mcController, agvId1, {
+        orderId: lastOrderId,
+        orderUpdateId: 0,
+        nodes: [
+            { nodeId: "n2", sequenceId: 0, released: true, actions: [] },
+            { nodeId: "n1", sequenceId: 2, released: false, nodePosition: { x: 0, y: 0, mapId: "local" }, actions: [] },
+        ],
+        edges: [
+            { edgeId: "e21", sequenceId: 1, startNodeId: "n2", endNodeId: "n1", released: false, actions: [] },
+        ],
+    }, {
+        completes: false,
+    });
+    await t.test("instant action cancelOrder on active order", ts => new Promise(async (resolve) => {
+        let changeInvocation = -1;
+        const actions = await mcController.initiateInstantActions(agvId1, {
+            actions: [{
+                    actionId: (0, __1.createUuid)(),
+                    actionType: "cancelOrder",
+                    blockingType: __1.BlockingType.Hard,
+                }],
+        }, {
+            onActionStateChanged: (actionState, withError, action, agvId, state) => {
+                changeInvocation++;
+                if (changeInvocation > 1) {
+                    ts.fail("unexpected actionStateChanged invocation");
+                    resolve();
+                    return;
+                }
+                ts.equal(actionState.actionStatus, changeInvocation === 0 ? __1.ActionStatus.Running : __1.ActionStatus.Finished);
+                ts.strictSame(agvId, agvId1);
+                ts.not(actions.actions.indexOf(action), -1);
+                ts.equal(withError, undefined);
+                if (actionState.actionStatus === __1.ActionStatus.Finished) {
+                    ts.pass("cancelOrder finished");
+                    resolve();
+                }
+                else if (actionState.actionStatus === __1.ActionStatus.Failed) {
+                    ts.fail("cancelOrder should not have failed");
+                    resolve();
+                }
+            },
+            onActionError: () => {
+                ts.fail("onActionError should never be called");
+                resolve();
+            },
+        });
+    }));
+});
